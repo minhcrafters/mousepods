@@ -499,6 +499,8 @@ class AAPClient:
         self.wx_mode = None          # "devmotion6" | "activity": SensorDataWX service asked for
         self.wx_svc_seen = None      # service the motion data actually comes from
         self.unparsed_logged = 0     # SensorDataWX packets without a motion block, logged (diagnosis)
+        self.rx_counts = {}          # packet kind -> count, for the "no motion" diagnosis
+        self.rx_dumped = 0           # packets dumped at DEBUG level (-v)
 
     def _pick(self):
         if self.want != "auto":
@@ -586,12 +588,12 @@ class AAPClient:
         if self.pid in RHID_ONLY_MODELS and not self.rhid_devs:   # AirPods 3 : RemoteHID uniquement
             self.rhid_host_connect()
             return
-        if self.rhid_devs:
-            if "devmotion6" in self.rhid_devs:
-                self.rhid_start()
-            else:
-                self.rhid_host_connect()
+        if "devmotion6" in self.rhid_devs:      # motion announced over RemoteHID (AirPods 3)
+            self.rhid_start()
             return
+        if retry:
+            log.info("No motion data yet. Received so far: %s", self.rx_summary())
+        # other RemoteHID devices (no devmotion6) must not stop the SensorDataWX attempts below
         modes = WX_MODES_ACTIVITY_FIRST if self.pid in ACTIVITY_FIRST_MODELS else WX_MODES_DEFAULT
         if self.wx_mode is None:
             self.wx_mode = modes[0]
@@ -609,8 +611,28 @@ class AAPClient:
             self.stream(SVC_ACTIVITY, 0)
         self.rhid_host_connect()
 
+    def rx_summary(self):
+        kinds = ", ".join(f"{k} x{n}" for k, n in sorted(self.rx_counts.items())) or "nothing"
+        rhid = ", ".join(f"{n} (id {d})" for n, d in sorted(self.rhid_devs.items()))
+        return kinds + (f"; RemoteHID devices: {rhid}" if rhid else "; no RemoteHID device announced")
+
+    def _count_rx(self, pkt):
+        if pkt[:10] == WX_PREFIX:
+            kind = "SensorDataWX"
+        elif pkt[:10] == RHID_PREFIX:
+            kind = "RemoteHID"
+        elif pkt[:4] == HDR and len(pkt) >= 5:
+            kind = "opcode 0x%02x" % pkt[4]
+        else:
+            kind = "other (%s)" % pkt[:6].hex()
+        self.rx_counts[kind] = self.rx_counts.get(kind, 0) + 1
+        if self.rx_dumped < 40 and log.isEnabledFor(logging.DEBUG):
+            self.rx_dumped += 1
+            log.debug("rx %s %d B: %s", kind, len(pkt), pkt[:48].hex())
+
     def process(self, pkt):
         """Paquet AAP -> liste de blocs capteur de 58 o ; met à jour place / stem_events."""
+        self._count_rx(pkt)
         if pkt[:10] == WX_PREFIX:
             found = motion_blocks_svc(pkt)
             if found and self.wx_svc_seen is None:
@@ -630,6 +652,8 @@ class AAPClient:
                         name = m.group(1).decode()
                         new = name not in self.rhid_devs
                         self.rhid_devs[name] = dev
+                        if new and name != "devmotion6":
+                            log.info("RemoteHID device announced: %s (id %d)", name, dev)
                         # une réannonce (ex. changement d'écouteur principal) annule les flux : on relance
                         if name == "devmotion6":
                             log.info("Sensor devmotion6 (RemoteHID id %d) %s — starting", dev,

@@ -469,6 +469,23 @@ class Pro1Tests(unittest.TestCase):
             c.start_tracking(retry=True)
         self.assertEqual(c.wx_mode, "devmotion6")
 
+    def test_other_remotehid_devices_do_not_block_retries(self):
+        # the bug seen on real AirPods Pro 1 on Windows: an announced RemoteHID device that is not
+        # devmotion6 made every retry send only HostConnect, silently, so no request ever answered
+        c = self.client(m.PID_PRO1)
+        plist = b"<?xml version><dict><key>AccessoryService</key><string>kadabra</string></dict>"
+        c.process(m.rhid_frame(1, [m.rhid_sub(3, m.RHID_CONNECT, plist)]))
+        c.process(bytes.fromhex("0400040006000000"))
+        c.start_tracking()
+        c.sent.clear()
+        with self.assertLogs(m.log, "INFO") as logs:
+            c.start_tracking(retry=True)
+        self.assertEqual(c.wx_mode, "activity40")
+        self.assertTrue([p for p in c.sent if p[:10] == m.WX_PREFIX], "SensorDataWX must still be tried")
+        text = "\n".join(logs.output)
+        self.assertIn("kadabra (id 3)", text)
+        self.assertIn("opcode 0x06 x1", text)
+
     def test_pro2_still_starts_with_devmotion6(self):
         c = self.client("2014")
         with mock.patch.object(m.time, "sleep"):
