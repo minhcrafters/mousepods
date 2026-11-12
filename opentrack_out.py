@@ -566,7 +566,20 @@ def api_state(ctl):
     """Réponse de GET /api/opentrack (utilisée par mousepods_web)."""
     import sim_joystick
     out = getattr(ctl, "opentrack", None)
-    return {"config": {**DEFAULTS, **ctl.cfg.get("opentrack", {})},
+    import sys
+    bridge = getattr(ctl, "game_bridge", None)
+    trackir = None
+    if sys.platform == "win32":
+        trackir = bridge.status() if hasattr(bridge, "status") else {"active": False, "error": None}
+        if not trackir["active"] and not trackir.get("foreign"):
+            try:
+                import games_service
+                import win_trackir
+                trackir["foreign"] = win_trackir.foreign_tracker(win_trackir.Registry(), games_service.dll_dir())
+            except Exception:  # noqa: BLE001  (status only)
+                pass
+    return {"platform": "windows" if sys.platform == "win32" else "linux", "trackir": trackir,
+            "config": {**DEFAULTS, **ctl.cfg.get("opentrack", {})},
             "joystick_config": {**sim_joystick.DEFAULTS, **ctl.cfg.get("sim_joystick", {})},
             "forced": bool(getattr(ctl, "opentrack_forced", False)),
             "joystick_forced": bool(getattr(ctl, "joystick_forced", False)),

@@ -455,8 +455,18 @@ code{background:var(--card2);padding:1px 6px;border-radius:5px}
       <li data-i18n="sims.opentrack_s_curves_and_filters_remain_us">Les courbes et filtres d'OpenTrack restent utiles ; dans ce cas mettre le lissage ci-dessous à 0. Recentrer ici (ou la touche Center d'OpenTrack).</li>
     </ol>
   </div>
-  <h2 data-i18n="sims.virtual_joystick_native_linux_games_no_o">Manette virtuelle (jeux Linux natifs, sans OpenTrack)</h2>
-  <div class="card">
+  <h2 id="trackir-h" data-i18n="sims.trackir_title" hidden>TrackIR / FreeTrack (jeux Windows, sans OpenTrack)</h2>
+  <div class="card" id="trackir-card" hidden>
+    <div class="set toggle" style="padding-top:0"><label data-i18n-html="sims.trackir_toggle">Se faire passer pour un TrackIR<small>enregistre les DLL NPClient et FreeTrack de MousePods pour ton compte ; le suivi d'avant revient quand tu coupes</small></label><label class="sw"><input type="checkbox" data-k="trackir.enabled" id="trackir-en"><span></span></label></div>
+    <div class="kv"><span data-i18n="sims.status">État</span><span id="trackir-status">—</span></div>
+    <ol class="disc" style="margin-top:12px;color:var(--text2);font-size:12.5px">
+      <li data-i18n="sims.trackir_step1">Lance le jeu après avoir activé ceci : les jeux cherchent un TrackIR au démarrage (DCS, MSFS, IL-2, Elite Dangerous, Euro Truck Simulator 2…).</li>
+      <li data-i18n="sims.trackir_step2">Les courbes de la page Calibration s'appliquent. Recentre ici ou avec Ctrl+Alt+C.</li>
+      <li data-i18n="sims.trackir_step3">Ne lance pas en même temps le logiciel TrackIR ni la sortie TrackIR d'OpenTrack.</li>
+    </ol>
+  </div>
+  <h2 id="js-h" data-i18n="sims.virtual_joystick_native_linux_games_no_o">Manette virtuelle (jeux Linux natifs, sans OpenTrack)</h2>
+  <div class="card" id="js-card">
     <div class="set toggle" style="padding-top:0"><label data-i18n-html="sims.create_the_mousepods_head_tracker_joysti">Créer la manette « MousePods head tracker »<small>ABS_RX = lacet · ABS_RY = tangage · ABS_RZ = roulis (même disposition que la sortie libevdev d'OpenTrack)</small></label><label class="sw"><input type="checkbox" data-k="sim_joystick.enabled" id="js-en"><span></span></label></div>
     <div class="set"><label data-i18n-html="sims.yaw_full_scale_head_degrees_for_full_axi">Pleine échelle lacet<small>degrés de tête pour un axe à fond ; plus petit = plus de débattement en jeu</small></label><input type="range" data-k="sim_joystick.full_yaw_deg" min="15" max="180" step="5"><output></output></div>
     <div class="set"><label data-i18n="sims.pitch_full_scale">Pleine échelle tangage</label><input type="range" data-k="sim_joystick.full_pitch_deg" min="10" max="180" step="5"><output></output></div>
@@ -985,6 +995,7 @@ function gameError(r){return r.json().then(j=>{throw new Error(j.error||r.status
 function postGame(appid,body){return fetch("/api/games/"+encodeURIComponent(appid),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})
   .then(r=>r.ok?r.json():gameError(r))}
 function renderGames(){const box=$("#games-list");if(!gamesData)return;
+  if(gamesData.platform==="windows"){box.innerHTML=`<div class="card empty">${esc(t("js.games.windows"))}</div>`;return}
   if(!gamesData.steam_found){box.innerHTML=`<div class="card empty">${esc(t("js.games.no_steam"))}</div>`;return}
   if(!gamesData.games.length){box.innerHTML=`<div class="card empty">${esc(t("js.games.no_games"))}</div>`;return}
   const miss=(gamesData.missing_libraries||[]).map(p=>`<div class="card hint">${esc(t("js.games.hint_missing_library",{path:p}))}<br><code>flatpak override --user --filesystem=${esc(p)} io.github.starman_tech.MousePods</code></div>`).join("");
@@ -1118,6 +1129,8 @@ function drawSim(p){const W=simCv.clientWidth,H=190,dpr=devicePixelRatio||1;if(s
   simCx.beginPath();simCx.ellipse(0,0,28,24,0,0,7);simCx.fill();simCx.stroke();simCx.strokeStyle=cv("--green");simCx.lineWidth=3;simCx.beginPath();simCx.moveTo(28,0);simCx.lineTo(R-4,0);simCx.stroke();simCx.restore();
   simCx.strokeStyle=cv("--orange");simCx.lineWidth=3;simCx.beginPath();const r0=-Math.PI/2;simCx.arc(c2[0],c2[1],R+6,r0,r0+rad(p[5]),p[5]<0);simCx.stroke()}
 function refreshOT(){if(page!=="sims")return;fetch("/api/opentrack").then(r=>r.json()).then(o=>{const c=o.config||{},j=o.joystick||{};
+  const win=o.platform==="windows";["#trackir-h","#trackir-card"].forEach(q=>$(q).hidden=!win);["#js-h","#js-card"].forEach(q=>$(q).hidden=win);
+  if(win){const ti=o.trackir||{};$("#trackir-status").textContent=ti.active?t("js.sims.trackir_on",{dir:ti.dll_dir||""}):ti.error==="missing_dll"?t("js.sims.trackir_missing_dll"):ti.foreign?t("js.sims.trackir_foreign",{path:ti.foreign}):t("js.sims.trackir_off")}
   if(document.activeElement!==$("#ot-host"))$("#ot-host").value=c.host||"";if(document.activeElement!==$("#ot-port"))$("#ot-port").value=c.port||"";
   const outs=o.outputs||[];$("#ot-en").checked=outs.includes("udp");$("#js-en").checked=outs.includes("joystick")||!!(o.joystick_config&&o.joystick_config.enabled&&j.error);
   $$("#ot-source button").forEach(b=>b.classList.toggle("on",b.dataset.v===(c.source||"quaternion")));

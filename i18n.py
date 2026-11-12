@@ -6,6 +6,7 @@ English is the source language; other languages fall back to English per key.
 import json
 import logging
 import os
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STRINGS_DIR = os.path.join(HERE, "ui", "i18n")
@@ -37,6 +38,22 @@ def env_lang(environ=None):
     for name in ("LC_ALL", "LC_MESSAGES", "LANG"):
         if env.get(name):
             return env[name]
+    if environ is None and sys.platform == "win32":
+        return windows_ui_lang()
+    return None
+
+
+def windows_ui_lang():
+    """Windows display language as a locale name ("de-DE"), or None. Windows has no LANG."""
+    try:
+        import ctypes
+        k32 = ctypes.WinDLL("kernel32")
+        buf = ctypes.create_unicode_buffer(85)
+        lang = k32.GetUserDefaultUILanguage()
+        if k32.LCIDToLocaleName(lang, buf, 85, 0):
+            return buf.value
+    except (OSError, AttributeError):
+        pass
     return None
 
 

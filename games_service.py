@@ -2,6 +2,7 @@
 """Glue for the Games page: Steam discovery + prefix installer + saved per-game settings."""
 import json
 import os
+import sys
 import threading
 
 import bridge_install
@@ -82,6 +83,8 @@ def _games(saved=None):
 
 
 def find(appid, cfg_path=None):
+    if sys.platform == "win32":
+        return None
     _, installs = _installs()
     copies = installs.get(str(appid))
     if not copies:
@@ -90,6 +93,11 @@ def find(appid, cfg_path=None):
 
 
 def list_payload(cfg_path):
+    if sys.platform == "win32":
+        # native Windows games read TrackIR / FreeTrack from the registry: one switch on the
+        # Simulators page (win_trackir.py) instead of a per-prefix install
+        return {"platform": "windows", "steam_found": False, "baseline": saved_baseline(cfg_path),
+                "steam_flatpak": False, "games": [], "missing_libraries": []}
     saved = saved_games(cfg_path)
     roots, games, installs = _games(saved)
     baseline = saved_baseline(cfg_path)

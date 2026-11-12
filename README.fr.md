@@ -82,6 +82,10 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 Linux avec BlueZ, AirPods appairés, accès en écriture à `/dev/uinput` (accordé par `uaccess` sur la plupart des bureaux). Pas besoin de root.
 
+**Windows 10 / 11 :** `powershell -ExecutionPolicy Bypass -File packaging\windows\install.ps1`, puis MousePods depuis le
+menu Démarrer. Windows a besoin du pilote séparé **MagicAAP** pour ouvrir le canal Bluetooth des AirPods, et ce pilote ne se
+charge qu'en mode test : lis d'abord **[docs/WINDOWS.md](docs/WINDOWS.md)** (en anglais).
+
 ## Ce qui marche
 
 ### Écouteurs et appareils
@@ -90,7 +94,8 @@ Linux avec BlueZ, AirPods appairés, accès en écriture à `/dev/uinput` (accor
 |---|---|---|
 | AirPods 3 | ✅ vérifié sur le matériel | RemoteHID, jusqu'à ~210 Hz |
 | AirPods Pro 2 (Lightning et USB-C) | ✅ vérifié sur le matériel | SensorDataWX, ~100 Hz |
-| AirPods Pro (1re gén.), AirPods 4, AirPods Max | ❓ pas testé | ils ont les capteurs ; [dis-nous ce que ça donne](https://github.com/starman-tech/mousepods/issues/new?template=device_report.yml) |
+| AirPods Pro (1re gén.) | ❓ pas testé, pris en charge dans le code | les deux protocoles sont lancés, celui qui répond est utilisé ([détails](docs/WINDOWS.md#airpods-pro-1st-generation)) ; [dis-nous ce que ça donne](https://github.com/starman-tech/mousepods/issues/new?template=device_report.yml) |
+| AirPods 4, AirPods Max | ❓ pas testé | ils ont les capteurs ; [dis-nous ce que ça donne](https://github.com/starman-tech/mousepods/issues/new?template=device_report.yml) |
 | AirPods 1 / 2 | ❌ | pas de capteurs de suivi de tête |
 | Sony WH/WF-1000XM5 et XM6, ULT Wear · Pixel Buds Pro / Pro 2 | ⚠️ expérimental | protocole HID standard d'Android, à tester : [docs/HEADSETS.md](docs/HEADSETS.md) |
 | Montre Garmin (module optionnel) | ⚠️ premiers essais | inclinaison du poignet, accéléromètre seul, 25 Hz |
@@ -128,7 +133,7 @@ Testé dans un autre jeu ? [Raconte-nous](https://github.com/starman-tech/mousep
 |---|---|
 | Linux, GNOME / KDE, Wayland et X11 | ✅ (Ubuntu 24.04, Bazzite) |
 | Distributions immuables (Bazzite, Fedora Atomic, SteamOS) | ✅ Flatpak, ou distrobox depuis le code |
-| Windows | ❌ pas encore : Windows n'ouvre pas aux applis le canal Bluetooth des AirPods |
+| Windows 10 / 11 | ⚠️ porté, pas encore testé sur le matériel : demande le pilote tiers MagicAAP (mode test), voir [docs/WINDOWS.md](docs/WINDOWS.md) |
 | macOS | ❌ inutile : l'API d'Apple donne déjà le suivi de tête |
 | Android | ❌ pas encore : il faut une pile Bluetooth qui autorise ce canal |
 

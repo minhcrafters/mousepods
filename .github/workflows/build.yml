@@ -35,6 +35,18 @@ jobs:
             exit 1
           fi
 
+  windows:
+    # the Windows port (docs/WINDOWS.md): real Win32 calls without AirPods, and every module imports
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -c "import airpods_mouse_controller, mousepods_web, opentrack_out, games_service, win_bt, win_input, win_trackir, ctrl_channel; from desktop import autostart, controller"
+      - run: python -m unittest tests.test_windows -v
+
   dlls:
     runs-on: ubuntu-latest
     steps:

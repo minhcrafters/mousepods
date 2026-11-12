@@ -21,3 +21,20 @@ def captures_dir(private=False):
     d = os.path.join(data_dir(), "captures", "private") if private else os.path.join(data_dir(), "captures")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def is_windows():
+    import sys
+    return sys.platform == "win32"
+
+
+def runtime_dir():
+    """Per-user directory for sockets, tokens and pose files.
+    Linux: XDG_RUNTIME_DIR (else /tmp, as upstream). Windows: %LOCALAPPDATA%\\MousePods, whose ACL
+    already limits it to the user."""
+    if is_windows():
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+        d = os.path.join(base, "MousePods")
+        os.makedirs(d, exist_ok=True)
+        return d
+    return os.environ.get("XDG_RUNTIME_DIR", "/tmp")

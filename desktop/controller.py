@@ -22,6 +22,9 @@ class ForeignServer(RuntimeError):
 
 
 def token_path():
+    if sys.platform == "win32":     # %LOCALAPPDATA%\MousePods is already per-user
+        import paths
+        return os.path.join(paths.runtime_dir(), "mousepods.token")
     base = os.environ.get("XDG_RUNTIME_DIR") or os.path.join(os.path.expanduser("~"), ".cache")
     return os.path.join(base, f"mousepods-{os.getuid()}.token")
 

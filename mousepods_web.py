@@ -400,7 +400,7 @@ def write_instance_token():
         os.unlink(tmp)                   # left over by a crashed process with the same pid
     except FileNotFoundError:
         pass
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)  # no O_NOFOLLOW on Windows
     with os.fdopen(fd, "w") as f:
         f.write(token)
     os.replace(tmp, path)

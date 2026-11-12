@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Matteo Gaudioso (starman-tech) — https://github.com/starman-tech/mousepods
 """
-airpods_mouse_controller.py — AirPods -> souris / pointeur (Linux, Wayland ou X11).
+airpods_mouse_controller.py — AirPods -> souris / pointeur (Linux Wayland ou X11, Windows 10/11).
 
   * AirPods 3        : protocole Apple RemoteHID (HID sur AACP, RTBuddy 0x800), jusqu'à ~200 Hz.
   * AirPods Pro 2/3/4: protocole SensorDataWX (RTBuddy 0x100000).
@@ -12,6 +12,8 @@ airpods_mouse_controller.py — AirPods -> souris / pointeur (Linux, Wayland ou 
   * Modes : "souris" (la vitesse du geste déplace le curseur, avec accélération)
             "pointeur" (la direction visée = position à l'écran, comme un laser).
   * Injection : /dev/uinput (python-evdev). Réglages rechargés à chaud depuis config.json.
+  * Windows : canal AAP par le pilote MagicAAP (win_bt.py), souris par SendInput (win_input.py),
+    raccourcis Ctrl+Alt+C/P/S/M intégrés, TrackIR / FreeTrack natifs (win_trackir.py).
 
 Usage :
   airpods_mouse_controller.py                  lance le contrôleur
@@ -40,13 +42,16 @@ import threading
 import time
 
 import bluez_dbus
+import ctrl_channel
 import l2cap
 import i18n
+import win_bt
 from i18n import tr
 
+IS_WINDOWS = sys.platform == "win32"
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CONFIG_PATH = os.path.join(HERE, "config.json")
-CTRL_SOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "airpods-mouse.sock")
+CTRL_SOCK = ctrl_channel.sock_path()
 log = logging.getLogger("airpods-mouse")
 
 # =========================================================================== configuration
@@ -58,6 +63,8 @@ DEFAULTS = {
     "games": {},                   # Steam appid -> {"enabled": bool, "profile": {...}} (game bridge)
     "game_baseline": None,         # Calibration page: edges for every game without own values
     "auto_connect": True,
+    "hotkeys": True,               # Windows: Ctrl+Alt+C/P/S/M (Linux/GNOME: --install-hotkeys)
+    "trackir": {"enabled": False},  # Windows: TrackIR / FreeTrack for native games (win_trackir.py)
     "mode": "souris",              # "souris" | "pointeur" | "glisse"
     "source": "auto",              # "auto" | "head" | "case" | "hand"
     "sensitivity_x": 1.0,
@@ -225,6 +232,8 @@ def bt_info(addr):
 
 
 def apple_audio_devices():
+    if IS_WINDOWS:
+        return win_bt.apple_audio_devices()
     if bluez_dbus.available():
         return bluez_dbus.list_apple_devices()
     out = []
@@ -247,6 +256,9 @@ def apple_audio_devices():
 
 
 def bt_connected(addr):
+    if IS_WINDOWS:
+        got = win_bt.info(addr)
+        return bool(got and got["connected"])
     if bluez_dbus.available():
         got = bluez_dbus.info(addr)
         return bool(got and got["connected"])
@@ -254,7 +266,11 @@ def bt_connected(addr):
 
 
 def bt_connect(addr, timeout):
-    """Ask BlueZ to connect `addr` (D-Bus if available, else bluetoothctl)."""
+    """Ask BlueZ to connect `addr` (D-Bus if available, else bluetoothctl).
+    Windows has no API to connect an audio device: Windows connects paired AirPods by itself when
+    they leave the case (or from Settings > Bluetooth & devices), so this only reports the state."""
+    if IS_WINDOWS:
+        return bt_connected(addr)
     if bluez_dbus.available():
         return bluez_dbus.connect(addr, timeout)
     subprocess.run(["bluetoothctl", "connect", addr], capture_output=True, text=True, timeout=timeout)
@@ -262,6 +278,8 @@ def bt_connect(addr, timeout):
 
 
 def bt_disconnect(addr):
+    if IS_WINDOWS:
+        return             # no API either: the AAP channel is closed and reopened instead
     if bluez_dbus.available():
         bluez_dbus.disconnect(addr)
     else:
@@ -269,6 +287,12 @@ def bt_disconnect(addr):
 
 
 def product_id(addr):
+    if IS_WINDOWS:
+        try:
+            got = win_bt.info(addr)
+        except OSError:
+            return "0000"
+        return got["pid"] if got else "0000"
     if bluez_dbus.available():
         got = bluez_dbus.info(addr)
         return got["pid"] if got else "0000"
@@ -404,6 +428,14 @@ def ear_place(pkt):
     return "out"
 
 
+# Apple product IDs (BlueZ modalias / Windows BTHENUM PID). H1-chip models predate SensorDataWX:
+# the AirPods 3 only speak RemoteHID. For the AirPods Pro (1st gen) and AirPods Max nobody has
+# captured which one they use, so both are started (start_tracking) and whichever answers wins.
+PID_AIRPODS3, PID_PRO1, PID_MAX = "2013", "200e", "200a"
+H1_MODELS = {PID_AIRPODS3, PID_PRO1, PID_MAX}
+RHID_ONLY_MODELS = {PID_AIRPODS3}
+
+
 class NoAirPodsConnected(OSError):
     """No paired AirPods are connected (errno 112, as before)."""
 
@@ -417,6 +449,10 @@ def connect_failure_status(error):
         return i18n.tr_lazy("srv.status.bluetoothctl_missing")
     if isinstance(error, NoAirPodsConnected):
         return i18n.tr_lazy("srv.status.no_airpods")
+    if isinstance(error, win_bt.DriverMissing):
+        return i18n.tr_lazy("srv.status.magicaap_missing")
+    if isinstance(error, win_bt.ChannelBusy):
+        return i18n.tr_lazy("srv.status.channel_busy")
     return i18n.tr_lazy("srv.status.searching", error=error)
 
 
@@ -447,7 +483,10 @@ class AAPClient:
     def _pick(self):
         if self.want != "auto":
             return self.want
-        if not bluez_dbus.available() and not have_bluetoothctl():
+        if IS_WINDOWS:
+            if not win_bt.driver_installed():
+                raise win_bt.DriverMissing()
+        elif not bluez_dbus.available() and not have_bluetoothctl():
             # without either we cannot list paired devices: say so instead of "no AirPods connected"
             raise BluetoothToolMissing()
         if self.addr and bt_connected(self.addr):   # reconnexion : déjà connu
@@ -468,13 +507,17 @@ class AAPClient:
 
     def connect(self):
         self.addr = self._pick()
-        if self.auto_connect and (bluez_dbus.available() or have_bluetoothctl()) and not bt_connected(self.addr):
+        if (not IS_WINDOWS and self.auto_connect and (bluez_dbus.available() or have_bluetoothctl())
+                and not bt_connected(self.addr)):
             try:
                 bt_connect(self.addr, 20)
             except subprocess.TimeoutExpired:
                 pass
         self.pid = product_id(self.addr)
-        s = l2cap.open_seqpacket(self.addr, 0x1001, IOS_MTU, 8)   # ctypes path if Python lacks AF_BLUETOOTH
+        if IS_WINDOWS:
+            s = win_bt.open_channel(self.addr, 8)   # MagicAAP driver; the MTU is the driver's
+        else:
+            s = l2cap.open_seqpacket(self.addr, 0x1001, IOS_MTU, 8)   # ctypes path if Python lacks AF_BLUETOOTH
         s.settimeout(None)
         self.sock = s
         for p, d in ((PKT_HANDSHAKE, 0.3), (PKT_FEATURES, 0.15), (PKT_NOTIFICATIONS, 0.15)):
@@ -519,7 +562,7 @@ class AAPClient:
             self.rhid_motion = dev
 
     def start_tracking(self):
-        if self.pid == "2013" and not self.rhid_devs:   # AirPods 3 : RemoteHID uniquement
+        if self.pid in RHID_ONLY_MODELS and not self.rhid_devs:   # AirPods 3 : RemoteHID uniquement
             self.rhid_host_connect()
             return
         if self.rhid_devs:
@@ -907,6 +950,10 @@ class Pointer:
         self.abs.close()
 
 
+if IS_WINDOWS:
+    from win_input import Pointer  # noqa: F811  (SendInput instead of uinput)
+
+
 class NullPointer:
     def __getattr__(self, name):
         return lambda *a, **k: None
@@ -1215,7 +1262,10 @@ class Controller:
             jc["enabled"] = True
         want_udp, want_js = bool(oc.get("enabled")), bool(jc.get("enabled"))
         games_cfg = self.cfg.get("games") or {}
-        want_games = any((g or {}).get("enabled") for g in games_cfg.values())
+        if IS_WINDOWS:    # native games: one TrackIR / FreeTrack output for all (win_trackir.py)
+            want_games = bool((self.cfg.get("trackir") or {}).get("enabled"))
+        else:
+            want_games = any((g or {}).get("enabled") for g in games_cfg.values())
         want_calib = getattr(self, "calibration", None) is not None   # calibration reads the head angle
         want_demo = time.monotonic() < getattr(self, "demo_until", 0.0)
         if (want_udp or want_js or want_games or want_calib or want_demo) and not self.opentrack:
@@ -1256,9 +1306,15 @@ class Controller:
             self.opentrack.tracker.suspend_autocenter = want_calib
             if want_games:
                 if not self.game_bridge:
-                    import game_bridge
-                    self.game_bridge = game_bridge.GameBridge(os.environ.get("MOUSEPODS_SHM_DIR", "/dev/shm"))
-                self.game_bridge.configure(games_cfg, self.cfg.get("game_baseline"))
+                    if IS_WINDOWS:
+                        import games_service
+                        import win_trackir
+                        self.game_bridge = win_trackir.TrackIRBridge(games_service.dll_dir())
+                    else:
+                        import game_bridge
+                        self.game_bridge = game_bridge.GameBridge(os.environ.get("MOUSEPODS_SHM_DIR", "/dev/shm"))
+                self.game_bridge.configure(self.cfg.get("trackir") if IS_WINDOWS else games_cfg,
+                                           self.cfg.get("game_baseline"))
                 self.opentrack.set_game_bridge(self.game_bridge)
             else:
                 self.opentrack.set_game_bridge(None)
@@ -1564,14 +1620,8 @@ class Controller:
 
 
 def open_ctrl_socket():
-    try:
-        os.unlink(CTRL_SOCK)
-    except FileNotFoundError:
-        pass
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-    s.bind(CTRL_SOCK)
-    os.chmod(CTRL_SOCK, 0o600)
-    return s
+    """Local command channel (selectable; .read() returns the command). See ctrl_channel.py."""
+    return ctrl_channel.Server()
 
 
 def run(cfg, cfg_path, diag=False, web_port=8737, opentrack=False, joystick=False):
@@ -1589,13 +1639,16 @@ def run(cfg, cfg_path, diag=False, web_port=8737, opentrack=False, joystick=Fals
         ctl.raw_imu_hooks.append(ctl.gestures.on_raw)
     except Exception as e:  # noqa: BLE001
         log.warning("Module gestes indisponible : %s", e)
-    try:                       # other headsets (Android head-tracker HID): optional, never blocks the AirPods
-        import hid_headtracker
-        ctl.headsets = hid_headtracker.Manager(ctl.on_head_pose,
-                                               enabled=lambda: ctl.cfg.get("headsets", {}).get("enabled", True))
-        ctl.headsets.start()
-    except Exception as e:  # noqa: BLE001
-        log.warning("Head-tracker headsets unavailable: %s", e)
+    if IS_WINDOWS:
+        log.info("Head-tracker headsets (Sony, Pixel Buds): Linux only for now (docs/WINDOWS.md)")
+    else:
+        try:                   # other headsets (Android head-tracker HID): optional, never blocks the AirPods
+            import hid_headtracker
+            ctl.headsets = hid_headtracker.Manager(ctl.on_head_pose,
+                                                   enabled=lambda: ctl.cfg.get("headsets", {}).get("enabled", True))
+            ctl.headsets.start()
+        except Exception as e:  # noqa: BLE001
+            log.warning("Head-tracker headsets unavailable: %s", e)
     ctl.opentrack_forced = opentrack
     ctl.joystick_forced = joystick
     ctl.sync_opentrack()
@@ -1608,8 +1661,17 @@ def run(cfg, cfg_path, diag=False, web_port=8737, opentrack=False, joystick=Fals
             log.info("Interface : http://127.0.0.1:%d", web_port)
         except Exception as e:  # l'interface ne doit jamais empêcher la souris de marcher
             log.warning("Interface web indisponible : %s", e)
+    hotkeys = None
+    if IS_WINDOWS and cfg.get("hotkeys", True) and not diag:
+        try:                   # through the command channel, so commands stay on this thread
+            import win_input
+            hotkeys = win_input.Hotkeys(ctrl_channel.send)
+            hotkeys.start()
+        except Exception as e:  # noqa: BLE001
+            log.warning("Raccourcis clavier indisponibles : %s", e)
     stem_on = cfg["stem"]["enabled"] and not diag
     backoff = 2
+    warned_mtu = False
     last_recovery = [-1e9]
     warned_case = False
     cfg_addr_hint = [None]
@@ -1636,7 +1698,7 @@ def run(cfg, cfg_path, diag=False, web_port=8737, opentrack=False, joystick=Fals
                 while time.monotonic() < t_end:
                     r, _, _ = select.select([ctrl], [], [], min(0.2, max(0.0, t_end - time.monotonic())))
                     if r:
-                        ctl.command(ctrl.recv(256).decode(errors="ignore"))
+                        ctl.command(ctrl.read())
                     if web:
                         web.process_queue()
                 backoff = min(backoff * 2, 20)
@@ -1669,7 +1731,7 @@ def run(cfg, cfg_path, diag=False, web_port=8737, opentrack=False, joystick=Fals
                     if web:
                         web.process_queue()
                     if ctrl in r:
-                        ctl.command(ctrl.recv(256).decode(errors="ignore"))
+                        ctl.command(ctrl.read())
                     now = time.monotonic()
                     if now >= next_frame:
                         ctl.render(now)
@@ -1688,16 +1750,24 @@ def run(cfg, cfg_path, diag=False, web_port=8737, opentrack=False, joystick=Fals
                         ctl.last_start_sent = now
                     # AirPods bloqués (plus d'annonce des capteurs alors qu'ils sont sortis du boîtier) :
                     # seule une reconnexion Bluetooth complète les débloque.
-                    if (aap.place in ("ear", "out") and not aap.rhid_devs and aap.pid == "2013"
+                    # Même chose pour les autres modèles H1 (AirPods Pro 1re gén., Max) quand ni
+                    # SensorDataWX ni RemoteHID ne répondent.
+                    if (aap.place in ("ear", "out") and not aap.rhid_devs and aap.pid in H1_MODELS
                             and now - ctl.last_ht > 10 and now - connected_at > 10
                             and now - last_recovery[0] > 60):
                         last_recovery[0] = now
+                        if IS_WINDOWS and not warned_mtu:
+                            # MagicAAP opens the channel with its own MTU; at Linux's default (672)
+                            # the AirPods do not announce their RemoteHID sensors (DISCOVERIES §6)
+                            warned_mtu = True
+                            log.warning("Aucun capteur annoncé : le MTU du canal MagicAAP est peut-être trop "
+                                        "petit pour RemoteHID (docs/WINDOWS.md)")
                         log.warning("Capteurs non annoncés — reconnexion Bluetooth complète")
                         aap.close()
                         bt_disconnect(aap.addr)
                         time.sleep(2)
                         raise OSError("relance Bluetooth")
-                    if aap.place == "case" and aap.pid == "2013" and not aap.rhid_devs and not warned_case:
+                    if aap.place == "case" and aap.pid == PID_AIRPODS3 and not aap.rhid_devs and not warned_case:
                         warned_case = True
                         notify(cfg, tr("srv.status.airpods3_case"))
             except OSError as e:
@@ -1720,12 +1790,10 @@ def run(cfg, cfg_path, diag=False, web_port=8737, opentrack=False, joystick=Fals
             web.stop()
         if ctl.opentrack:
             ctl.opentrack.stop()
+        if hotkeys:
+            hotkeys.stop()
         ptr.close()
         ctrl.close()
-        try:
-            os.unlink(CTRL_SOCK)
-        except OSError:
-            pass
         log.info("Arrêté")
 
 
@@ -2042,10 +2110,7 @@ def settings_window(cfg_path):
 
 # =========================================================================== CLI
 def send_command(cmd):
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-    try:
-        s.sendto(cmd.encode(), CTRL_SOCK)
-    except (FileNotFoundError, ConnectionRefusedError):
+    if not ctrl_channel.send(cmd):
         print("Le contrôleur ne tourne pas.", file=sys.stderr)
         return 1
     return 0
@@ -2062,6 +2127,10 @@ GS_PATH = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/"
 
 
 def install_hotkeys():
+    if IS_WINDOWS:
+        print("Windows : Ctrl+Alt+C / P / S / M sont actifs tant que MousePods tourne "
+              "(\"hotkeys\": false dans config.json pour les couper).")
+        return
     import ast
     cur = subprocess.run(["gsettings", "get", GS_SCHEMA, "custom-keybindings"],
                          capture_output=True, text=True, check=True).stdout.strip()
@@ -2088,9 +2157,8 @@ def open_ui(port, cfg_path):
         urllib.request.urlopen(url + "api/ping", timeout=1)
     except OSError:
         log.info("Lancement du contrôleur en arrière-plan…")
-        subprocess.Popen([sys.executable, os.path.abspath(__file__), "-c", cfg_path, "--port", str(port)],
-                         stdout=open(os.path.join(HERE, "controller.log"), "a"), stderr=subprocess.STDOUT,
-                         start_new_session=True)
+        spawn_background([os.path.abspath(__file__), "-c", cfg_path, "--port", str(port)],
+                         os.path.join(HERE, "controller.log"))
         for _ in range(50):
             time.sleep(0.2)
             try:
@@ -2098,6 +2166,16 @@ def open_ui(port, cfg_path):
                 break
             except OSError:
                 pass
+    if IS_WINDOWS:
+        browser = windows_app_browser()
+        if browser:
+            subprocess.Popen([browser, f"--app={url}", "--window-size=1280,860"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+        else:
+            import webbrowser
+            webbrowser.open(url)
+        return
     for browser in ("google-chrome", "chromium", "chromium-browser", "brave-browser"):
         if shutil.which(browser):
             subprocess.Popen([browser, f"--app={url}", "--window-size=1280,860",
@@ -2105,6 +2183,43 @@ def open_ui(port, cfg_path):
                              start_new_session=True)
             return
     subprocess.Popen(["xdg-open", url])
+
+
+def background_python():
+    """Python for a background controller: pythonw.exe on Windows (no console window)."""
+    if IS_WINDOWS:
+        w = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if os.path.isfile(w):
+            return w
+    return sys.executable
+
+
+def spawn_background(args, log_path):
+    """Start `python args...` detached from this process, output appended to log_path."""
+    out = open(log_path, "a")
+    if IS_WINDOWS:
+        flags = (getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                 | getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return subprocess.Popen([background_python()] + args, stdout=out, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, creationflags=flags)
+    return subprocess.Popen([sys.executable] + args, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+
+
+def windows_app_browser():
+    """Edge (always there on Windows 10/11) or Chrome / Brave, for a window without browser UI."""
+    for name in ("msedge", "chrome", "brave"):
+        found = shutil.which(name)
+        if found:
+            return found
+    roots = [os.environ.get(v) for v in ("ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA")]
+    rel = (r"Microsoft\Edge\Application\msedge.exe", r"Google\Chrome\Application\chrome.exe",
+           r"BraveSoftware\Brave-Browser\Application\brave.exe")
+    for root in filter(None, roots):
+        for r in rel:
+            p = os.path.join(root, r)
+            if os.path.isfile(p):
+                return p
+    return None
 
 
 def main():

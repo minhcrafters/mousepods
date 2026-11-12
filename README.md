@@ -136,6 +136,10 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 Requirements: Linux with BlueZ, AirPods paired and connected, write access to `/dev/uinput` (granted to the logged-in user by
 `uaccess` on most desktop distributions). No root.
 
+**Windows 10 / 11:** `powershell -ExecutionPolicy Bypass -File packaging\windows\install.ps1`, then MousePods from the
+Start menu. Windows needs the separate **MagicAAP** driver to open the AirPods' Bluetooth channel, and that driver
+only loads in test mode: read **[docs/WINDOWS.md](docs/WINDOWS.md)** first.
+
 ```bash
 .venv/bin/python airpods_mouse_controller.py --diag          # live rates in the terminal, no cursor control
 .venv/bin/python -m unittest discover -s tests               # 400+ tests, no hardware needed
@@ -175,7 +179,8 @@ with *Enable both*. Assetto Corsa follows the head in the cockpit camera.
 |---|---|---|
 | AirPods 3 | ✅ verified on hardware | RemoteHID, up to ~210 Hz |
 | AirPods Pro 2 (Lightning and USB-C) | ✅ verified on hardware | SensorDataWX, ~100 Hz |
-| AirPods Pro (1st gen), AirPods 4, AirPods Max | ❓ untested | they have the sensors; [report how it goes](https://github.com/starman-tech/mousepods/issues/new?template=device_report.yml) |
+| AirPods Pro (1st gen) | ❓ untested, supported in code | both protocols are started, whichever answers is used ([details](docs/WINDOWS.md#airpods-pro-1st-generation)); [report how it goes](https://github.com/starman-tech/mousepods/issues/new?template=device_report.yml) |
+| AirPods 4, AirPods Max | ❓ untested | they have the sensors; [report how it goes](https://github.com/starman-tech/mousepods/issues/new?template=device_report.yml) |
 | AirPods 1 / 2 | ❌ | no head-tracking sensors |
 | Sony WH/WF-1000XM5 and XM6, ULT Wear · Pixel Buds Pro / Pro 2 | ⚠️ experimental | Android's head-tracker HID, needs testing: [docs/HEADSETS.md](docs/HEADSETS.md) |
 | Garmin watch (optional module) | ⚠️ first tests | wrist tilt, accelerometer only, 25 Hz ([below](#garmin-watch-as-a-mouse-optional)) |
@@ -213,7 +218,7 @@ Tried it in another game? [Tell us](https://github.com/starman-tech/mousepods/is
 |---|---|
 | Linux, GNOME / KDE, Wayland and X11 | ✅ (Ubuntu 24.04, Bazzite) |
 | Immutable distros (Bazzite, Fedora Atomic, SteamOS) | ✅ Flatpak, or a distrobox from source |
-| Windows | ❌ not yet: Windows doesn't let apps open the Bluetooth channel AirPods use |
+| Windows 10 / 11 | ⚠️ ported, not yet tested on hardware: needs the third-party MagicAAP driver (test mode), see [docs/WINDOWS.md](docs/WINDOWS.md) |
 | macOS | ❌ not needed: Apple's own API already gives head tracking |
 | Android | ❌ not yet: needs a Bluetooth stack that allows the AirPods channel |
 
