@@ -77,7 +77,7 @@ FLOAT_KEYS = {"rate_hz": (10, 500), "scale_yaw": (0.0, 10.0), "scale_pitch": (0.
 def encode_pose(x, y, z, yaw, pitch, roll):
     vals = (x, y, z, yaw, pitch, roll)
     if not all(math.isfinite(v) for v in vals):       # OpenTrack jette les paquets NaN/inf
-        raise ValueError("valeur non finie")
+        raise ValueError("non-finite value")
     return PACKET.pack(*(float(v) for v in vals))
 
 

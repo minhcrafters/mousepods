@@ -849,7 +849,7 @@ class GestureEngine:
     def start_calib(self, gesture, reps=None):
         c = gesture_cfg(self.cfg_get())
         if gesture not in CALIB_KEYS:
-            raise ValueError(f"geste non calibrable : {gesture}")
+            raise ValueError(f"gesture cannot be calibrated: {gesture}")
         key, _ = CALIB_KEYS[gesture]
         self.calib = {"gesture": gesture, "key": key, "reps": int(reps or c["calib_reps"]), "peaks": [],
                       "old": c[key], "done": False, "result": None}
@@ -887,7 +887,7 @@ class GestureEngine:
             self._on_sample(ts_ns, now, att, w, g, a, rates)
         except Exception as e:  # noqa: BLE001  (les gestes ne doivent jamais arrêter la souris)
             if self.error is None:
-                m.log.warning("Gestes : erreur %s", e)
+                m.log.warning("Gestures: error %s", e)
             self.error = str(e)
 
     def _on_sample(self, ts_ns, now, att, w, g, a, rates):
@@ -910,7 +910,7 @@ class GestureEngine:
                 self._feed("raw", row["ts_ns"], now, None, row["w"], row["a"], row["g"], r)
         except Exception as e:  # noqa: BLE001
             if self.error is None:
-                m.log.warning("Gestes (IMU brute) : erreur %s", e)
+                m.log.warning("Gestures (raw IMU): error %s", e)
             self.error = str(e)
 
     def _feed(self, src, ts_ns, now, q, w, a, g, rates):
@@ -1087,17 +1087,17 @@ def replay(rows, cfg=None, profile=None, bias_cfg=None, verbose=False):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Rejeu des gestes sur un enregistrement")
-    ap.add_argument("--replay", required=True, help="CSV (gestures.py) ou capture JSON")
-    ap.add_argument("--config", default=m.DEFAULT_CONFIG_PATH, help="config.json (seuils + profil)")
-    ap.add_argument("--profile", default=None, help="clé de profil (ex. 2013_head) ; défaut : premier *_head")
-    ap.add_argument("--no-activation", action="store_true", help="ignorer la fenêtre d'activation")
+    ap = argparse.ArgumentParser(description="Replay gesture detection on a recording")
+    ap.add_argument("--replay", required=True, help="CSV (gestures.py) or JSON capture")
+    ap.add_argument("--config", default=m.DEFAULT_CONFIG_PATH, help="config.json (thresholds + profile)")
+    ap.add_argument("--profile", default=None, help="profile key (e.g. 2013_head); default: first *_head")
+    ap.add_argument("--no-activation", action="store_true", help="ignore the activation window")
     ap.add_argument("--source", default="auto", choices=("auto", "raw", "dm6"),
-                    help="trames brutes : IMU HID brute (raw) ou devmotion6 (dm6)")
-    ap.add_argument("--phases", action="store_true", help="tableau des gestes par phase étiquetée")
-    ap.add_argument("--lag", type=float, default=0.5, help="décalage d'attribution aux phases (s)")
-    ap.add_argument("--stats", action="store_true", help="statistiques capteur (fréquence, trous, doublons)")
-    ap.add_argument("--spectrum", action="store_true", help="énergie au-dessus de 25 et 50 Hz")
+                    help="raw frames: raw HID IMU (raw) or devmotion6 (dm6)")
+    ap.add_argument("--phases", action="store_true", help="table of gestures per labelled phase")
+    ap.add_argument("--lag", type=float, default=0.5, help="lag when attributing events to phases (s)")
+    ap.add_argument("--stats", action="store_true", help="sensor statistics (rate, gaps, duplicates)")
+    ap.add_argument("--spectrum", action="store_true", help="energy above 25 and 50 Hz")
     a = ap.parse_args(argv)
     cfg = m.load_config(a.config) if os.path.exists(a.config) else json.loads(json.dumps(m.DEFAULTS))
     gc = dict(cfg.get("gestures", {}))
@@ -1108,17 +1108,17 @@ def main(argv=None):
     rows = load_recording(a.replay, a.source)
     events, st, rej, buf = replay(rows, gc, profs.get(key) if key else None, cfg.get("bias"))
     t0 = rows[0]["ts_ns"] / 1e9 if rows else 0.0
-    print(f"{len(rows)} échantillons, profil {key or 'par défaut'}")
+    print(f"{len(rows)} samples, profile {key or 'default'}")
     for e in events:
         extra = " ".join(f"{k}={v}" for k, v in e.items() if k not in ("t", "type", "conf", "peak", "label"))
-        print(f"  t={e['t'] - t0:8.3f}s  {e['type']:<14} conf={e['conf']:.2f} pic={e['peak']:<7} "
+        print(f"  t={e['t'] - t0:8.3f}s  {e['type']:<14} conf={e['conf']:.2f} peak={e['peak']:<7} "
               f"[{e.get('label', '')}] {extra}")
-    print(f"{len(events)} événements ; rejets : {rej}")
+    print(f"{len(events)} events; rejected: {rej}")
     if a.phases:
         for ph, d in phase_report(events, rows, a.lag).items():
-            print(f"  {ph or '(sans étiquette)':<14} " + (", ".join(f"{k}={v}" for k, v in sorted(d.items())) or "—"))
+            print(f"  {ph or '(no label)':<14} " + (", ".join(f"{k}={v}" for k, v in sorted(d.items())) or "—"))
     if a.stats or a.spectrum:
-        print("capteur :", json.dumps(st, ensure_ascii=False))
+        print("sensor:", json.dumps(st, ensure_ascii=False))
     if a.spectrum:
         # spectre moyen sur des fenêtres successives de 1,28 s du même segment
         segs = {}
@@ -1137,8 +1137,8 @@ def main(argv=None):
                     fr25.append(sum(pp for ff, pp in zip(f, p) if ff >= 25) / tot)
                     fr50.append(sum(pp for ff, pp in zip(f, p) if ff >= 50) / tot)
             if fr25:
-                print(f"spectre {kind} : énergie >25 Hz = {100 * _median(fr25):.1f} %, "
-                      f">50 Hz = {100 * _median(fr50):.1f} % (médiane sur {len(fr25)} fenêtres)")
+                print(f"spectrum {kind}: energy >25 Hz = {100 * _median(fr25):.1f} %, "
+                      f">50 Hz = {100 * _median(fr50):.1f} % (median over {len(fr25)} windows)")
     return 0
 
 

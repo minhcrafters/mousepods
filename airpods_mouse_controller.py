@@ -2,28 +2,30 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Matteo Gaudioso (starman-tech) — https://github.com/starman-tech/mousepods
 """
-airpods_mouse_controller.py — AirPods -> souris / pointeur (Linux Wayland ou X11, Windows 10/11).
+airpods_mouse_controller.py — AirPods -> mouse / pointer (Linux Wayland or X11, Windows 10/11).
 
-  * AirPods 3        : protocole Apple RemoteHID (HID sur AACP, RTBuddy 0x800), jusqu'à ~200 Hz.
-  * AirPods Pro 2/3/4: protocole SensorDataWX (RTBuddy 0x100000).
-  * Mouvement : gyroscope + gravité des écouteurs -> lacet autour de la VERTICALE, tangage autour
-    d'un axe latéral appris en calibration. Marche quelle que soit l'orientation :
-    écouteurs portés (tête), écouteurs dans le boîtier ouvert, ou un AirPod tenu en main.
-  * Modes : "souris" (la vitesse du geste déplace le curseur, avec accélération)
-            "pointeur" (la direction visée = position à l'écran, comme un laser).
-  * Injection : /dev/uinput (python-evdev). Réglages rechargés à chaud depuis config.json.
-  * Windows : canal AAP par le pilote MagicAAP (win_bt.py), souris par SendInput (win_input.py),
-    raccourcis Ctrl+Alt+C/P/S/M intégrés, TrackIR / FreeTrack natifs (win_trackir.py).
+  * AirPods 3        : Apple RemoteHID protocol (HID over AACP, RTBuddy 0x800), up to ~200 Hz.
+  * AirPods Pro 2/3/4: SensorDataWX protocol (RTBuddy 0x100000).
+  * AirPods Pro (1st gen): both are started, whichever answers is used.
+  * Motion: the buds' gyroscope + gravity -> yaw around the VERTICAL, pitch around a lateral axis
+    learned in calibration. Works in any orientation: buds worn (head), buds in the open case,
+    or one AirPod held in the hand.
+  * Modes: "souris" = mouse (the speed of the gesture moves the cursor, with acceleration)
+           "pointeur" = pointer (where you aim = position on screen, like a laser).
+  * Output: /dev/uinput (python-evdev). Settings reloaded live from config.json.
+  * Windows: AAP channel through the MagicAAP driver (win_bt.py), mouse through SendInput
+    (win_input.py), built-in Ctrl+Alt+C/P/S/M shortcuts, native TrackIR / FreeTrack (win_trackir.py).
 
-Usage :
-  airpods_mouse_controller.py                  lance le contrôleur
-  airpods_mouse_controller.py --settings       panneau de réglages (curseurs en direct)
-  airpods_mouse_controller.py --calibrate      calibration à l'écran (tête / boîtier / main)
-  airpods_mouse_controller.py --diag           affiche les vitesses/angles en direct
-  airpods_mouse_controller.py --opentrack      + suivi de tête vers OpenTrack (UDP 127.0.0.1:4242)
-  airpods_mouse_controller.py --sim-joystick   + manette virtuelle « tête » (jeux Linux natifs), voir docs/SIMS.md
+Usage:
+  airpods_mouse_controller.py                  run the controller
+  airpods_mouse_controller.py --ui             open the app (starts the controller if needed)
+  airpods_mouse_controller.py --settings       settings panel (live sliders)
+  airpods_mouse_controller.py --calibrate      on-screen calibration (head / case / hand)
+  airpods_mouse_controller.py --diag           print live rates and angles, no cursor control
+  airpods_mouse_controller.py --opentrack      + head tracking to OpenTrack (UDP 127.0.0.1:4242)
+  airpods_mouse_controller.py --sim-joystick   + virtual "head" joystick (native Linux games), see docs/SIMS.md
   airpods_mouse_controller.py --send CMD       recenter|toggle|pause|resume|scroll|mode|quit
-  airpods_mouse_controller.py --install-hotkeys  raccourcis GNOME (Ctrl+Alt+C/P/S/M)
+  airpods_mouse_controller.py --install-hotkeys  GNOME shortcuts (Ctrl+Alt+C/P/S/M)
 """
 import argparse
 import json
@@ -205,9 +207,9 @@ def update_config_file(path, updates):
 
 
 # =========================================================================== Bluetooth
-BLUETOOTHCTL_MISSING = ("bluetoothctl introuvable / not found: installe le paquet bluez "
-                        "(Fedora, distrobox : sudo dnf install bluez ; Debian/Ubuntu : sudo apt install bluez), "
-                        "ou mets l'adresse des AirPods dans device_address")
+BLUETOOTHCTL_MISSING = ("bluetoothctl not found: install the bluez package "
+                        "(Fedora, distrobox: sudo dnf install bluez; Debian/Ubuntu: sudo apt install bluez), "
+                        "or set the AirPods address in device_address")
 
 
 def have_bluetoothctl():
@@ -497,7 +499,7 @@ class AAPClient:
             return con[0][0]
         if self.auto_connect:
             for d in devs:
-                log.info("Tentative de connexion : %s (%s)", d[1], d[0])
+                log.info("Trying to connect: %s (%s)", d[1], d[0])
                 try:
                     if bt_connect(d[0], 12):
                         return d[0]
@@ -525,7 +527,7 @@ class AAPClient:
             time.sleep(d)
         self.rhid_devs, self.rhid_motion = {}, None
         self.rhid_host_connect()
-        log.info("Canal AAP ouvert avec %s (modèle %s)", self.addr, self.pid)
+        log.info("AAP channel open with %s (model %s)", self.addr, self.pid)
 
     def send(self, pkt):
         if self.sock:
@@ -534,7 +536,7 @@ class AAPClient:
             try:
                 self.sock.send(pkt)
             except OSError as e:
-                log.warning("Envoi AAP impossible : %s", e)
+                log.warning("Cannot send AAP packet: %s", e)
 
     # ---- SensorDataWX (AirPods Pro / 4)
     def stream(self, svc, interval_us):
@@ -593,8 +595,8 @@ class AAPClient:
                         self.rhid_devs[name] = dev
                         # une réannonce (ex. changement d'écouteur principal) annule les flux : on relance
                         if name == "devmotion6":
-                            log.info("Capteur devmotion6 (RemoteHID id %d) %s — démarrage", dev,
-                                     "annoncé" if new else "réannoncé")
+                            log.info("Sensor devmotion6 (RemoteHID id %d) %s — starting", dev,
+                                     "announced" if new else "re-announced")
                             self.rhid_start()
                         if dev in self.rhid_active:
                             self.rhid_set_feature(dev, 1, self.rhid_active[dev])
@@ -1067,7 +1069,7 @@ class Controller:
             try:
                 new = load_config(self.cfg_path)
             except (OSError, ValueError) as e:
-                log.warning("config.json illisible (%s)", e)
+                log.warning("config.json unreadable (%s)", e)
                 return
             old_mode = self.cfg["mode"]
             self.cfg.clear()
@@ -1087,7 +1089,7 @@ class Controller:
             self.sync_opentrack()
             if self.cfg["mode"] != old_mode:
                 self.recenter(quiet=True)
-            log.info("Réglages rechargés")
+            log.info("Settings reloaded")
 
     # ---- source / profil
     @property
@@ -1103,7 +1105,7 @@ class Controller:
         self.glide.set_profile(self.cfg["profiles"].get(f"{self.pid}_glide", {}))
         prof = self.cfg["profiles"].get(self.profile_key())
         if prof is None or "lat" not in prof:
-            log.warning("Profil %s non calibré : lance --calibrate dans cette position",
+            log.warning("Profile %s not calibrated: run --calibrate in this position",
                         self.profile_key())
             prof = DEFAULT_PROFILE
         self.engine.set_profile(prof)
@@ -1117,7 +1119,7 @@ class Controller:
             self.place = place
             if self.cfg["source"] != "auto":       # source choisie à la main : rien ne bouge
                 return
-            log.info("Position détectée : %s -> source %s", place, tr(SOURCE_NAMES[self.source], "fr"))
+            log.info("Position detected: %s -> source %s", place, tr(SOURCE_NAMES[self.source], "fr"))
             self._load_profile()
             self.recenter(quiet=True)
 
@@ -1186,12 +1188,12 @@ class Controller:
                 aap.rhid_set_feature(dev, 1, iv)
                 aap.rhid_active[dev] = iv
                 kinds[dev] = kind
-                log.info("Gestes : flux %s brut (RemoteHID %d) à %d µs", name, dev, iv)
+                log.info("Gestures: raw %s stream (RemoteHID %d) at %d µs", name, dev, iv)
             elif not want and dev in kinds:
                 aap.rhid_set_feature(dev, 1, 0)
                 aap.rhid_active.pop(dev, None)
                 kinds.pop(dev, None)
-                log.info("Gestes : flux %s brut arrêté", name)
+                log.info("Gestures: raw %s stream stopped", name)
 
     def on_head_pose(self, yaw, pitch, roll, dt, yaw_rate=0.0, name=""):
         """Head angles from a HID head-tracker headset (another thread): simulator outputs, demo pages, mouse."""
@@ -1280,10 +1282,10 @@ class Controller:
                     log.warning("OpenTrack settings ignored (%s) - output without UDP", e)
                     self.opentrack = opentrack_out.OpenTrackOutput({}, udp=False).start()
                 if want_udp:
-                    log.info("OpenTrack : envoi vers %s:%s à %s Hz", oc.get("host"), oc.get("port"), oc.get("rate_hz"))
+                    log.info("OpenTrack: sending to %s:%s at %s Hz", oc.get("host"), oc.get("port"), oc.get("rate_hz"))
                     notify(self.cfg, tr("srv.status.opentrack_on"))
             except (OSError, ValueError) as e:
-                log.warning("OpenTrack indisponible : %s", e)
+                log.warning("OpenTrack unavailable: %s", e)
         elif want_udp or want_js or want_games or want_calib or want_demo:
             if want_udp != self.opentrack.udp:
                 notify(self.cfg, tr("srv.status.opentrack_on") if want_udp else tr("srv.status.opentrack_off"))
@@ -1298,7 +1300,7 @@ class Controller:
             if self.game_bridge:
                 self.game_bridge.close()
                 self.game_bridge = None
-            log.info("Sorties simulateur : arrêtées")
+            log.info("Simulator outputs: stopped")
             if not getattr(self, "_calib_ending", False):
                 notify(self.cfg, tr("srv.status.sim_outputs_off"))
             return
@@ -1325,10 +1327,10 @@ class Controller:
             js = self.opentrack.set_joystick(jc if want_js else None)
             if want_js and not had:
                 if js is not None:
-                    log.info("Manette virtuelle « tête » créée")
+                    log.info("Virtual head joystick created")
                     notify(self.cfg, tr("srv.status.joystick_on"))
                 else:
-                    log.warning("Manette virtuelle impossible : %s", self.opentrack.joystick_error)
+                    log.warning("Virtual joystick unavailable: %s", self.opentrack.joystick_error)
     # ---- /OpenTrack ------------------------------------------------------------------------
 
     # ---- calibration of a game profile (overlay with points, see calibration.py)
@@ -1511,9 +1513,9 @@ class Controller:
         if self.diag:
             if now - self._last_print > 0.1:
                 self._last_print = now
-                print(f"\r[{tr(SOURCE_NAMES[self.source], 'fr'):7s}] lacet {yaw_f:+7.1f}°/s  tangage {pitch_f:+7.1f}°/s"
-                      f"  roulis {roll:+7.1f}°/s  biais {'ok' if self.engine.bias_ok else '..'}"
-                      f"  éch. {self.n}   ", end="", flush=True)
+                print(f"\r[{tr(SOURCE_NAMES[self.source], 'en'):7s}] yaw {yaw_f:+7.1f}°/s  pitch {pitch_f:+7.1f}°/s"
+                      f"  roll {roll:+7.1f}°/s  bias {'ok' if self.engine.bias_ok else '..'}"
+                      f"  samples {self.n}   ", end="", flush=True)
             return
         if self.inactive:
             self.vel = (0.0, 0.0)
@@ -1615,7 +1617,7 @@ class Controller:
             self.dwell_anchor, self.dwell_t0, self.dwell_fired = (x, y), now, False
         elif not self.dwell_fired and self.dwell_moved >= dc["min_move_px"] and now - self.dwell_t0 >= dc["time_s"]:
             self.dwell_fired, self.dwell_moved = True, 0.0
-            log.info("Clic par immobilité")
+            log.info("Dwell click")
             self.ptr.click("left")
 
 
@@ -1638,7 +1640,7 @@ def run(cfg, cfg_path, diag=False, web_port=8737, opentrack=False, joystick=Fals
         ctl.gesture_hooks.append(ctl.gestures.on_sample)
         ctl.raw_imu_hooks.append(ctl.gestures.on_raw)
     except Exception as e:  # noqa: BLE001
-        log.warning("Module gestes indisponible : %s", e)
+        log.warning("Gestures module unavailable: %s", e)
     if IS_WINDOWS:
         log.info("Head-tracker headsets (Sony, Pixel Buds): Linux only for now (docs/WINDOWS.md)")
     else:
@@ -1660,7 +1662,7 @@ def run(cfg, cfg_path, diag=False, web_port=8737, opentrack=False, joystick=Fals
             web.start()
             log.info("Interface : http://127.0.0.1:%d", web_port)
         except Exception as e:  # l'interface ne doit jamais empêcher la souris de marcher
-            log.warning("Interface web indisponible : %s", e)
+            log.warning("Web interface unavailable: %s", e)
     hotkeys = None
     if IS_WINDOWS and cfg.get("hotkeys", True) and not diag:
         try:                   # through the command channel, so commands stay on this thread
@@ -1668,7 +1670,7 @@ def run(cfg, cfg_path, diag=False, web_port=8737, opentrack=False, joystick=Fals
             hotkeys = win_input.Hotkeys(ctrl_channel.send)
             hotkeys.start()
         except Exception as e:  # noqa: BLE001
-            log.warning("Raccourcis clavier indisponibles : %s", e)
+            log.warning("Keyboard shortcuts unavailable: %s", e)
     stem_on = cfg["stem"]["enabled"] and not diag
     backoff = 2
     warned_mtu = False
@@ -1676,7 +1678,7 @@ def run(cfg, cfg_path, diag=False, web_port=8737, opentrack=False, joystick=Fals
     warned_case = False
     cfg_addr_hint = [None]
     tool_missing_logged = [False]
-    log.info("Démarrage — mode %s, source %s", "DIAGNOSTIC" if diag else cfg["mode"], cfg["source"])
+    log.info("Starting — mode %s, source %s", "DIAGNOSTIC" if diag else cfg["mode"], cfg["source"])
     aap = None
     try:
         while True:
@@ -1691,7 +1693,7 @@ def run(cfg, cfg_path, diag=False, web_port=8737, opentrack=False, joystick=Fals
                         log.error("%s", e)
                         tool_missing_logged[0] = True
                 else:
-                    log.warning("Connexion impossible (%s) — nouvel essai dans %ss", e, backoff)
+                    log.warning("Cannot connect (%s) — retrying in %ss", e, backoff)
                 if web:
                     web.set_status(connect_failure_status(e))
                 t_end = time.monotonic() + backoff
@@ -1724,7 +1726,7 @@ def run(cfg, cfg_path, diag=False, web_port=8737, opentrack=False, joystick=Fals
                     if aap.sock in r:
                         pkt = aap.sock.recv(8192)
                         if not pkt:
-                            raise OSError("canal fermé")
+                            raise OSError("channel closed")
                         if web:
                             web.feed_packet(pkt)
                         ctl.on_packet(pkt, aap)
@@ -1745,7 +1747,7 @@ def run(cfg, cfg_path, diag=False, web_port=8737, opentrack=False, joystick=Fals
                         ctl.sync_raw_imu(aap)
                     wait = 20 if ctl.place == "case" else 4
                     if now - ctl.last_ht > wait and now - ctl.last_start_sent > wait:
-                        log.info("Pas de données de mouvement — relance du flux")
+                        log.info("No motion data — restarting the stream")
                         aap.start_tracking()
                         ctl.last_start_sent = now
                     # AirPods bloqués (plus d'annonce des capteurs alors qu'ils sont sortis du boîtier) :
@@ -1760,18 +1762,18 @@ def run(cfg, cfg_path, diag=False, web_port=8737, opentrack=False, joystick=Fals
                             # MagicAAP opens the channel with its own MTU; at Linux's default (672)
                             # the AirPods do not announce their RemoteHID sensors (DISCOVERIES §6)
                             warned_mtu = True
-                            log.warning("Aucun capteur annoncé : le MTU du canal MagicAAP est peut-être trop "
-                                        "petit pour RemoteHID (docs/WINDOWS.md)")
-                        log.warning("Capteurs non annoncés — reconnexion Bluetooth complète")
+                            log.warning("No sensor announced: the MagicAAP channel's MTU may be too small "
+                                        "for RemoteHID (docs/WINDOWS.md)")
+                        log.warning("Sensors not announced — full Bluetooth reconnect")
                         aap.close()
                         bt_disconnect(aap.addr)
                         time.sleep(2)
-                        raise OSError("relance Bluetooth")
+                        raise OSError("Bluetooth restart")
                     if aap.place == "case" and aap.pid == PID_AIRPODS3 and not aap.rhid_devs and not warned_case:
                         warned_case = True
                         notify(cfg, tr("srv.status.airpods3_case"))
             except OSError as e:
-                log.warning("Canal AAP perdu (%s), reconnexion…", e)
+                log.warning("AAP channel lost (%s), reconnecting…", e)
                 if web:
                     web.set_status(i18n.tr_lazy("srv.status.lost_reconnecting"))
                 prev_addr = aap.addr
@@ -1794,7 +1796,7 @@ def run(cfg, cfg_path, diag=False, web_port=8737, opentrack=False, joystick=Fals
             hotkeys.stop()
         ptr.close()
         ctrl.close()
-        log.info("Arrêté")
+        log.info("Stopped")
 
 
 # =========================================================================== lecture capteur (thread, pour les fenêtres)
@@ -1827,7 +1829,7 @@ class SensorReader(threading.Thread):
                     if r:
                         pkt = aap.sock.recv(8192)
                         if not pkt:
-                            raise OSError("canal fermé")
+                            raise OSError("channel closed")
                         for blk in aap.process(pkt):
                             ts, w, g = parse_block(blk, self.cfg["gyro_dps_per_lsb"])
                             dt = (ts - last_ts) / 1e9 if last_ts else 0.01
@@ -2111,7 +2113,7 @@ def settings_window(cfg_path):
 # =========================================================================== CLI
 def send_command(cmd):
     if not ctrl_channel.send(cmd):
-        print("Le contrôleur ne tourne pas.", file=sys.stderr)
+        print("The controller is not running.", file=sys.stderr)
         return 1
     return 0
 
@@ -2128,8 +2130,8 @@ GS_PATH = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/"
 
 def install_hotkeys():
     if IS_WINDOWS:
-        print("Windows : Ctrl+Alt+C / P / S / M sont actifs tant que MousePods tourne "
-              "(\"hotkeys\": false dans config.json pour les couper).")
+        print("Windows: Ctrl+Alt+C / P / S / M are active while MousePods runs "
+              "(\"hotkeys\": false in config.json turns them off).")
         return
     import ast
     cur = subprocess.run(["gsettings", "get", GS_SCHEMA, "custom-keybindings"],
@@ -2156,7 +2158,7 @@ def open_ui(port, cfg_path):
     try:
         urllib.request.urlopen(url + "api/ping", timeout=1)
     except OSError:
-        log.info("Lancement du contrôleur en arrière-plan…")
+        log.info("Starting the controller in the background…")
         spawn_background([os.path.abspath(__file__), "-c", cfg_path, "--port", str(port)],
                          os.path.join(HERE, "controller.log"))
         for _ in range(50):
@@ -2228,15 +2230,15 @@ def main():
     ap.add_argument("--diag", action="store_true")
     ap.add_argument("--calibrate", action="store_true")
     ap.add_argument("--settings", action="store_true")
-    ap.add_argument("--ui", action="store_true", help="ouvre l'application (lance le contrôleur si besoin)")
+    ap.add_argument("--ui", action="store_true", help="open the app (starts the controller if needed)")
     ap.add_argument("--port", type=int, default=8737)
     ap.add_argument("--no-web", action="store_true")
     ap.add_argument("--send", metavar="CMD")
     ap.add_argument("--install-hotkeys", action="store_true")
     ap.add_argument("-v", "--verbose", action="store_true")
-    ap.add_argument("--opentrack", action="store_true", help="envoie le suivi de tête à OpenTrack (UDP) pour la session")
+    ap.add_argument("--opentrack", action="store_true", help="send head tracking to OpenTrack (UDP) for this session")
     ap.add_argument("--sim-joystick", action="store_true",
-                    help="crée une manette virtuelle dont les axes sont l'orientation de la tête (session)")
+                    help="create a virtual joystick whose axes are the head orientation (this session)")
     args = ap.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")

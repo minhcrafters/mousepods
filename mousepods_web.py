@@ -435,7 +435,7 @@ class WebUI:
             self.speech = silent_speech.SpeechSession(os.path.join(paths.captures_dir(private=True), "silent_speech.json"))
             ctl.gesture_hooks.append(self.speech.on_sample)
         except Exception as e:  # noqa: BLE001
-            m.log.warning("Parole silencieuse indisponible : %s", e)
+            m.log.warning("Silent speech unavailable: %s", e)
         self.labo_tap = None      # page Labo : détecteur permissif + session guidée
         self.labo = None
         self.labo_done = None
@@ -449,7 +449,7 @@ class WebUI:
                 g.sample_taps.append(self.labo_tap.on_sample)
             ctl.gesture_hooks.append(self._labo_dm6)
         except Exception as e:  # noqa: BLE001
-            m.log.warning("Labo indisponible : %s", e)
+            m.log.warning("Lab unavailable: %s", e)
         self.garmin = None        # montre Garmin (garmin/service.py) ; garmin-ble est optionnel
         self.garmin_error = None
         try:
@@ -457,7 +457,7 @@ class WebUI:
             self.garmin = garmin_service.GarminService().autostart()
         except Exception as e:  # noqa: BLE001
             self.garmin_error = str(e)
-            m.log.warning("Module Garmin indisponible : %s", e)
+            m.log.warning("Garmin module unavailable: %s", e)
 
     # ---- liaison avec la boucle principale
     def attach(self, aap):
@@ -480,7 +480,7 @@ class WebUI:
                 self.rec = None
                 with open(rec["path"], "w") as f:
                     json.dump(rec["rows"], f)
-                m.log.info("Enregistrement terminé : %s (%d paquets)", rec["path"], len(rec["rows"]))
+                m.log.info("Recording finished: %s (%d packets)", rec["path"], len(rec["rows"]))
 
     # ---- calibration of a game profile: head movement first (CalibSession), then the points
     HEAD_NO_DATA_S = 3.0
@@ -533,7 +533,7 @@ class WebUI:
             try:
                 self._do(item)
             except Exception as e:  # noqa: BLE001
-                m.log.warning("Action interface échouée %s : %s", item, e)
+                m.log.warning("UI action failed %s: %s", item, e)
 
     def _do(self, item):
         kind = item[0]
@@ -592,7 +592,7 @@ class WebUI:
         elif a == "rec_stop":
             info = g.stop_record()
             if info:
-                m.log.info("Enregistrement gestes : %s (%d lignes)", info["path"], info["rows"])
+                m.log.info("Gesture recording: %s (%d rows)", info["path"], info["rows"])
         elif a == "clear":
             g.events.clear()
 
@@ -666,7 +666,7 @@ class WebUI:
                     with open(base + "_bilan.json", "w") as f:
                         json.dump(sess.result, f, ensure_ascii=False, indent=1, default=str)
                 except OSError as e:
-                    m.log.warning("Labo : bilan non écrit : %s", e)
+                    m.log.warning("Lab: report not written: %s", e)
             threading.Thread(target=finish, daemon=True).start()
 
     def labo_state(self, since=None):
