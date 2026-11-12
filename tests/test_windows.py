@@ -431,15 +431,59 @@ class Pro1Tests(unittest.TestCase):
         self.assertIn(m.PID_PRO1, m.H1_MODELS)
         self.assertNotIn(m.PID_PRO1, m.RHID_ONLY_MODELS)
 
-    def test_pro1_starts_both_protocols(self):
+    def test_pro1_keeps_activity_running(self):
         c = self.client(m.PID_PRO1)
+        c.start_tracking()
+        wx = [p for p in c.sent if p[:10] == m.WX_PREFIX]
+        # DEVMOTION6 off, ACTIVITY on at the configured rate and left running
+        self.assertEqual(len(wx), 2)
+        self.assertIn(bytes([0x08, m.SVC_DEVMOTION6]), wx[0])
+        self.assertTrue(wx[0].endswith(struct.pack("<I", 0)))
+        self.assertIn(bytes([0x08, m.SVC_ACTIVITY]), wx[1])
+        self.assertTrue(wx[1].endswith(struct.pack("<I", c.interval_us)))
+        self.assertTrue([p for p in c.sent if p[:10] == m.RHID_PREFIX], "RemoteHID HostConnect too")
+
+    def test_retry_alternates_until_data(self):
+        c = self.client(m.PID_PRO1)
+        c.start_tracking()
+        self.assertEqual(c.wx_mode, "activity")
+        c.sent.clear()
+        c.start_tracking(retry=True)             # LibrePods' known-good request: ACTIVITY at 40 ms
+        self.assertEqual(c.wx_mode, "activity40")
+        act = [p for p in c.sent if p[:10] == m.WX_PREFIX][-1]
+        self.assertIn(bytes([0x08, m.SVC_ACTIVITY]), act)
+        self.assertTrue(act.endswith(struct.pack("<I", 40000)))
+        with mock.patch.object(m.time, "sleep"):
+            c.start_tracking(retry=True)
+        self.assertEqual(c.wx_mode, "devmotion6")
+        c.start_tracking(retry=True)
+        self.assertEqual(c.wx_mode, "activity")  # and around again
+        with mock.patch.object(m.time, "sleep"):
+            c.start_tracking(retry=True)
+            c.start_tracking(retry=True)
+        self.assertEqual(c.wx_mode, "devmotion6")
+        c.start_tracking()                       # not a retry (rate change): no switch
+        self.assertEqual(c.wx_mode, "devmotion6")
+        c.wx_svc_seen = m.SVC_DEVMOTION6         # data arrived: keep what works
+        with mock.patch.object(m.time, "sleep"):
+            c.start_tracking(retry=True)
+        self.assertEqual(c.wx_mode, "devmotion6")
+
+    def test_pro2_still_starts_with_devmotion6(self):
+        c = self.client("2014")
         with mock.patch.object(m.time, "sleep"):
             c.start_tracking()
         wx = [p for p in c.sent if p[:10] == m.WX_PREFIX]
-        rhid = [p for p in c.sent if p[:10] == m.RHID_PREFIX]
-        self.assertEqual(len(wx), 3)                                   # ACTIVITY on, DEVMOTION6, ACTIVITY off
+        self.assertEqual(len(wx), 3)            # ACTIVITY on, DEVMOTION6, ACTIVITY off (unchanged)
         self.assertIn(bytes([0x08, m.SVC_DEVMOTION6]), wx[1])
-        self.assertTrue(rhid, "RemoteHID HostConnect must be tried too")
+
+    def test_activity_blocks_are_accepted_and_logged_once(self):
+        c = self.client(m.PID_PRO1)
+        vec = bytes.fromhex("04000400170000001000450008ff7f10013a3e08101a3a015021d8c7130d0000030043998d62bb00"
+                            "0000006cb9a83eb5fc0300020001005e1003d37706fdff000001008d020d035c0034aac63786ff0000")
+        act = vec.replace(bytes.fromhex("3a3e0810"), bytes.fromhex("3a3e080e"), 1)   # same block, service 14
+        self.assertEqual(len(c.process(act)), 1)
+        self.assertEqual(c.wx_svc_seen, m.SVC_ACTIVITY)
 
     def test_airpods3_still_remotehid_only(self):
         c = self.client(m.PID_AIRPODS3)

@@ -398,6 +398,11 @@ def pb_fields(buf):
 
 def motion_blocks(pkt):
     """Blocs capteur (58 o) d'un paquet SensorDataWX (souvent plusieurs par paquet)."""
+    return [blk for _, blk in motion_blocks_svc(pkt)]
+
+
+def motion_blocks_svc(pkt):
+    """[(service, bloc 58 o)] d'un paquet SensorDataWX."""
     if len(pkt) < 12 or pkt[:10] != WX_PREFIX:
         return []
     n = struct.unpack_from("<H", pkt, 10)[0]
@@ -412,7 +417,7 @@ def motion_blocks(pkt):
                     elif f2 == 3:
                         blk = v2
                 if blk is not None and len(blk) >= 50 and svc in (SVC_ACTIVITY, SVC_DEVMOTION6, 15):
-                    out.append(blk)
+                    out.append((svc, blk))
     except ValueError:
         pass
     return out
@@ -436,6 +441,16 @@ def ear_place(pkt):
 PID_AIRPODS3, PID_PRO1, PID_MAX = "2013", "200e", "200a"
 H1_MODELS = {PID_AIRPODS3, PID_PRO1, PID_MAX}
 RHID_ONLY_MODELS = {PID_AIRPODS3}
+# SensorDataWX ways to start motion, tried in turn while no motion arrives (4 s each):
+#   devmotion6 : DEVMOTION6 (16) at the configured rate, as the AirPods Pro 2 want
+#   activity   : ACTIVITY (14) at the configured rate, left running
+#   activity40 : ACTIVITY at 40 ms, left running: LibrePods' start packet, the one reported working on
+#                AirPods Pro (1st gen) (librepods-org/librepods#719, StarNumber12046/airpods-head-track)
+# The H1 models start with ACTIVITY.
+ACTIVITY_FIRST_MODELS = {PID_PRO1, PID_MAX}
+WX_MODES_DEFAULT = ("devmotion6", "activity", "activity40")
+WX_MODES_ACTIVITY_FIRST = ("activity", "activity40", "devmotion6")
+LIBREPODS_ACTIVITY_US = 40000
 
 
 class NoAirPodsConnected(OSError):
@@ -481,6 +496,9 @@ class AAPClient:
         self.imu_kinds = {}          # dev -> "a" | "w" : flux IMU bruts demandés par les gestes
         self.imu_reports = []        # [(kind, payload)] en attente pour Controller.raw_imu_hooks
         self.on_raw = None           # callback(direction, paquet)
+        self.wx_mode = None          # "devmotion6" | "activity": SensorDataWX service asked for
+        self.wx_svc_seen = None      # service the motion data actually comes from
+        self.unparsed_logged = 0     # SensorDataWX packets without a motion block, logged (diagnosis)
 
     def _pick(self):
         if self.want != "auto":
@@ -563,7 +581,8 @@ class AAPClient:
             self.rhid_set_feature(dev, 1, self.interval_us)   # feature 1 = Report Interval (µs)
             self.rhid_motion = dev
 
-    def start_tracking(self):
+    def start_tracking(self, retry=False):
+        """retry=True: called because no motion arrived; switches the SensorDataWX service."""
         if self.pid in RHID_ONLY_MODELS and not self.rhid_devs:   # AirPods 3 : RemoteHID uniquement
             self.rhid_host_connect()
             return
@@ -573,16 +592,34 @@ class AAPClient:
             else:
                 self.rhid_host_connect()
             return
-        self.stream(SVC_ACTIVITY, 40000)
-        time.sleep(0.25)
-        self.stream(SVC_DEVMOTION6, self.interval_us)
-        self.stream(SVC_ACTIVITY, 0)
+        modes = WX_MODES_ACTIVITY_FIRST if self.pid in ACTIVITY_FIRST_MODELS else WX_MODES_DEFAULT
+        if self.wx_mode is None:
+            self.wx_mode = modes[0]
+        elif retry and self.wx_svc_seen is None:
+            self.wx_mode = modes[(modes.index(self.wx_mode) + 1) % len(modes)]
+            log.info("No motion data yet: trying SensorDataWX %s", self.wx_mode)
+        if self.wx_mode.startswith("activity"):
+            us = LIBREPODS_ACTIVITY_US if self.wx_mode == "activity40" else self.interval_us
+            self.stream(SVC_DEVMOTION6, 0)
+            self.stream(SVC_ACTIVITY, us)                  # left running (AirPods Pro 1st gen)
+        else:
+            self.stream(SVC_ACTIVITY, 40000)
+            time.sleep(0.25)
+            self.stream(SVC_DEVMOTION6, self.interval_us)
+            self.stream(SVC_ACTIVITY, 0)
         self.rhid_host_connect()
 
     def process(self, pkt):
         """Paquet AAP -> liste de blocs capteur de 58 o ; met à jour place / stem_events."""
         if pkt[:10] == WX_PREFIX:
-            return motion_blocks(pkt)
+            found = motion_blocks_svc(pkt)
+            if found and self.wx_svc_seen is None:
+                self.wx_svc_seen = found[0][0]
+                log.info("Motion data: SensorDataWX service %d (model %s)", self.wx_svc_seen, self.pid)
+            elif not found and self.unparsed_logged < 5:
+                self.unparsed_logged += 1      # unknown answer: shown so it can be decoded later
+                log.info("SensorDataWX packet without motion block (%d B): %s", len(pkt), pkt[:64].hex())
+            return [blk for _, blk in found]
         if pkt[:10] == RHID_PREFIX:
             blocks = []
             for kind, dev, pl in rhid_parse(pkt):
@@ -625,6 +662,7 @@ class AAPClient:
                 if self.rhid_motion is not None:
                     self.rhid_set_feature(self.rhid_motion, 1, 0)
                 self.stream(SVC_DEVMOTION6, 0)
+                self.stream(SVC_ACTIVITY, 0)
                 if stem_restore:
                     self.send(PKT_STEM_EVENTS_OFF)
                 time.sleep(0.05)
@@ -1748,7 +1786,7 @@ def run(cfg, cfg_path, diag=False, web_port=8737, opentrack=False, joystick=Fals
                     wait = 20 if ctl.place == "case" else 4
                     if now - ctl.last_ht > wait and now - ctl.last_start_sent > wait:
                         log.info("No motion data — restarting the stream")
-                        aap.start_tracking()
+                        aap.start_tracking(retry=True)
                         ctl.last_start_sent = now
                     # AirPods bloqués (plus d'annonce des capteurs alors qu'ils sont sortis du boîtier) :
                     # seule une reconnexion Bluetooth complète les débloque.
@@ -1842,7 +1880,7 @@ class SensorReader(threading.Thread):
                             self.status = tr("srv.status.receiving")
                         self.place = aap.place or self.place
                     if now - last_ht > 4 and now - last_start > 4:
-                        aap.start_tracking()
+                        aap.start_tracking(retry=True)
                         last_start = now
                         self.status = tr("srv.status.no_data")
             except (OSError, subprocess.TimeoutExpired) as e:

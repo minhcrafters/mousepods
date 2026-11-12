@@ -83,12 +83,19 @@ MousePods, as on Linux.
 
 ## AirPods Pro (1st generation)
 
-Product ID `0x200E`, H1 chip. They have the sensors and do head tracking on iPhone, but nobody has
-captured yet whether they send motion through **SensorDataWX** (like the AirPods Pro 2) or **RemoteHID**
-(like the AirPods 3, the other H1 model). MousePods starts both and uses whichever answers. If neither
-answers for 10 s while a bud is out of the case, it retries with a reconnect, as for the AirPods 3.
+Product ID `0x200E`, H1 chip. What is known:
+- They send motion as **SensorDataWX** frames (RTBuddy `0x00100000`), like the AirPods Pro 2, not
+  RemoteHID like the AirPods 3. So the MTU limit above does not apply to them. Source: head-tracking
+  data captured on AirPods Pro 1 in [librepods-org/librepods#719](https://github.com/librepods-org/librepods/issues/719).
+- The start request reported working on them is LibrePods' one: the **ACTIVITY** service (14) at
+  40 ms, left running. The AirPods Pro 2 use **DEVMOTION6** (16) instead, which the first version of
+  this port asked for: the AirPods Pro 1 then connected (ear detection worked) but sent no motion.
 
-If you have a pair, the most useful thing is a report: run
-`python airpods_mouse_controller.py --diag -v`, then open a
+MousePods now starts the AirPods Pro 1 with ACTIVITY at the configured rate. If nothing arrives within
+4 s it tries ACTIVITY at 40 ms, then DEVMOTION6, and around again until one answers. The log says
+which one worked (`Motion data: SensorDataWX service …`) and prints the first SensorDataWX packets it
+could not decode, so a failing pair can still be diagnosed from a log.
+
+If you have a pair, run `python airpods_mouse_controller.py --diag -v` and open a
 [device report](https://github.com/starman-tech/mousepods/issues/new?template=device_report.yml) with
-the log. Say whether the lines mention `devmotion6 (RemoteHID …)` or show live rates without it.
+the log.
